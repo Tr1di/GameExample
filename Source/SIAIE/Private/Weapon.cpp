@@ -3,25 +3,18 @@
 
 #include "Weapon.h"
 
-// Sets default values
-AWeapon::AWeapon()
+AWeapon::AWeapon(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
 {
- 	// Set this actor to call Tick() every frame.  You can turn this off to improve performance if you don't need it.
-	PrimaryActorTick.bCanEverTick = true;
-
-}
-
-// Called when the game starts or when spawned
-void AWeapon::BeginPlay()
-{
-	Super::BeginPlay();
 	
 }
 
-// Called every frame
-void AWeapon::Tick(float DeltaTime)
+void AWeapon::Interact_Implementation(ASIAIECharacter* InInstigator)
 {
-	Super::Tick(DeltaTime);
-
+	
 }
 
+bool AWeapon::CanBeInteractedBy_Implementation(ASIAIECharacter* InInstigator) const
+{
+	
+}

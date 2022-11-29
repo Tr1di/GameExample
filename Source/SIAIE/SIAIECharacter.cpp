@@ -10,15 +10,25 @@
 #include "HeadMountedDisplayFunctionLibrary.h"
 #include "Kismet/GameplayStatics.h"
 #include "MotionControllerComponent.h"
+#include "Weapon.h"
 #include "XRMotionControllerBase.h" // for FXRMotionControllerBase::RightHandSourceId
+#include "Net/UnrealNetwork.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogFPChar, Warning, All);
 
 //////////////////////////////////////////////////////////////////////////
 // ASIAIECharacter
 
+void FHolster::SetWeapon(AWeapon* InWeapon)
+{
+	Weapon = InWeapon;
+}
+
 ASIAIECharacter::ASIAIECharacter()
 {
+	SetCanBeDamaged(true);
+	bReplicates = true;
+	
 	// Set size for collision capsule
 	GetCapsuleComponent()->InitCapsuleSize(55.f, 96.0f);
 
@@ -32,6 +42,8 @@ ASIAIECharacter::ASIAIECharacter()
 	FirstPersonCameraComponent->SetRelativeLocation(FVector(-39.56f, 1.75f, 64.f)); // Position the camera
 	FirstPersonCameraComponent->bUsePawnControlRotation = true;
 
+	GetMesh()->SetOwnerNoSee(true);
+	
 	// Create a mesh component that will be used when being viewed from a '1st person' view (when controlling this pawn)
 	Mesh1P = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("CharacterMesh1P"));
 	Mesh1P->SetOnlyOwnerSee(true);
@@ -40,69 +52,12 @@ ASIAIECharacter::ASIAIECharacter()
 	Mesh1P->CastShadow = false;
 	Mesh1P->SetRelativeRotation(FRotator(1.9f, -19.19f, 5.2f));
 	Mesh1P->SetRelativeLocation(FVector(-0.5f, -4.4f, -155.7f));
-
-	// Create a gun mesh component
-	FP_Gun = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("FP_Gun"));
-	FP_Gun->SetOnlyOwnerSee(false);			// otherwise won't be visible in the multiplayer
-	FP_Gun->bCastDynamicShadow = false;
-	FP_Gun->CastShadow = false;
-	// FP_Gun->SetupAttachment(Mesh1P, TEXT("GripPoint"));
-	FP_Gun->SetupAttachment(RootComponent);
-
-	FP_MuzzleLocation = CreateDefaultSubobject<USceneComponent>(TEXT("MuzzleLocation"));
-	FP_MuzzleLocation->SetupAttachment(FP_Gun);
-	FP_MuzzleLocation->SetRelativeLocation(FVector(0.2f, 48.4f, -10.6f));
-
-	// Default offset from the character location for projectiles to spawn
-	GunOffset = FVector(100.0f, 0.0f, 10.0f);
-
-	// Note: The ProjectileClass and the skeletal mesh/anim blueprints for Mesh1P, FP_Gun, and VR_Gun 
-	// are set in the derived blueprint asset named MyCharacter to avoid direct content references in C++.
-
-	// Create VR Controllers.
-	R_MotionController = CreateDefaultSubobject<UMotionControllerComponent>(TEXT("R_MotionController"));
-	R_MotionController->MotionSource = FXRMotionControllerBase::RightHandSourceId;
-	R_MotionController->SetupAttachment(RootComponent);
-	L_MotionController = CreateDefaultSubobject<UMotionControllerComponent>(TEXT("L_MotionController"));
-	L_MotionController->SetupAttachment(RootComponent);
-
-	// Create a gun and attach it to the right-hand VR controller.
-	// Create a gun mesh component
-	VR_Gun = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("VR_Gun"));
-	VR_Gun->SetOnlyOwnerSee(false);			// otherwise won't be visible in the multiplayer
-	VR_Gun->bCastDynamicShadow = false;
-	VR_Gun->CastShadow = false;
-	VR_Gun->SetupAttachment(R_MotionController);
-	VR_Gun->SetRelativeRotation(FRotator(0.0f, -90.0f, 0.0f));
-
-	VR_MuzzleLocation = CreateDefaultSubobject<USceneComponent>(TEXT("VR_MuzzleLocation"));
-	VR_MuzzleLocation->SetupAttachment(VR_Gun);
-	VR_MuzzleLocation->SetRelativeLocation(FVector(0.000004, 53.999992, 10.000000));
-	VR_MuzzleLocation->SetRelativeRotation(FRotator(0.0f, 90.0f, 0.0f));		// Counteract the rotation of the VR gun model.
-
-	// Uncomment the following line to turn motion controllers on by default:
-	//bUsingMotionControllers = true;
 }
 
 void ASIAIECharacter::BeginPlay()
 {
 	// Call the base class  
 	Super::BeginPlay();
-
-	//Attach gun mesh component to Skeleton, doing it here because the skeleton is not yet created in the constructor
-	FP_Gun->AttachToComponent(Mesh1P, FAttachmentTransformRules(EAttachmentRule::SnapToTarget, true), TEXT("GripPoint"));
-
-	// Show or hide the two versions of the gun based on whether or not we're using motion controllers.
-	if (bUsingMotionControllers)
-	{
-		VR_Gun->SetHiddenInGame(false, true);
-		Mesh1P->SetHiddenInGame(true, true);
-	}
-	else
-	{
-		VR_Gun->SetHiddenInGame(true, true);
-		Mesh1P->SetHiddenInGame(false, true);
-	}
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -119,12 +74,16 @@ void ASIAIECharacter::SetupPlayerInputComponent(class UInputComponent* PlayerInp
 
 	// Bind fire event
 	PlayerInputComponent->BindAction("Fire", IE_Pressed, this, &ASIAIECharacter::OnFire);
+	PlayerInputComponent->BindAction("Fire", IE_Released, this, &ASIAIECharacter::OnStopFire);
 
-	// Enable touchscreen input
-	EnableTouchscreenMovement(PlayerInputComponent);
+	PlayerInputComponent->BindAction("Interact", IE_Pressed, this, &ASIAIECharacter::Interact);
 
-	PlayerInputComponent->BindAction("ResetVR", IE_Pressed, this, &ASIAIECharacter::OnResetVR);
-
+	PlayerInputComponent->BindAction("NextWeapon", IE_Pressed, this, &ASIAIECharacter::NextWeapon);
+	PlayerInputComponent->BindAction("PreviousWeapon", IE_Released, this, &ASIAIECharacter::PreviousWeapon);
+	
+	PlayerInputComponent->BindAction("SheathWeapon", IE_Released, this, &ASIAIECharacter::SheathWeapon);
+	PlayerInputComponent->BindAction("DropWeapon", IE_Released, this, &ASIAIECharacter::DropCurrentWeapon);
+	
 	// Bind movement events
 	PlayerInputComponent->BindAxis("MoveForward", this, &ASIAIECharacter::MoveForward);
 	PlayerInputComponent->BindAxis("MoveRight", this, &ASIAIECharacter::MoveRight);
@@ -138,121 +97,335 @@ void ASIAIECharacter::SetupPlayerInputComponent(class UInputComponent* PlayerInp
 	PlayerInputComponent->BindAxis("LookUpRate", this, &ASIAIECharacter::LookUpAtRate);
 }
 
+void ASIAIECharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+	DOREPLIFETIME(ASIAIECharacter, CurrentWeapon);
+	DOREPLIFETIME(ASIAIECharacter, Weapons);
+}
+
+float ASIAIECharacter::PlayAnimMontage(UAnimMontage* AnimMontage, float InPlayRate, FName StartSectionName)
+{
+	USkeletalMeshComponent* UseMesh = GetPawnMesh();
+	if (AnimMontage && UseMesh && UseMesh->AnimScriptInstance)
+	{
+		return UseMesh->AnimScriptInstance->Montage_Play(AnimMontage, InPlayRate);
+	}
+
+	return 0.0f;
+}
+
+void ASIAIECharacter::StopAnimMontage(UAnimMontage* AnimMontage)
+{
+	USkeletalMeshComponent* UseMesh = GetPawnMesh();
+	if (AnimMontage && UseMesh && UseMesh->AnimScriptInstance &&
+		UseMesh->AnimScriptInstance->Montage_IsPlaying(AnimMontage))
+	{
+		UseMesh->AnimScriptInstance->Montage_Stop(AnimMontage->BlendOut.GetBlendTime(), AnimMontage);
+	}
+}
+
+AActor* ASIAIECharacter::InteractTrace(TSubclassOf<UInterface> SearchClass)
+{
+	FHitResult OutHit;
+	
+	const FVector Start = GetPawnViewLocation();
+	const FVector Forward = GetControlRotation().Vector();
+	const FVector End = Start + Forward * InteractTraceLength;
+
+	TArray<AActor*> ActorsToIgnore;
+	ActorsToIgnore.Add(this);
+	GetAttachedActors(ActorsToIgnore, false);
+
+	FCollisionQueryParams Params;
+	Params.bTraceComplex = true;
+	Params.AddIgnoredActors(ActorsToIgnore);
+	
+	if (GetWorld()->LineTraceSingleByChannel(OutHit, Start, End, ECC_Visibility, Params))
+	{
+		if (OutHit.bBlockingHit && OutHit.GetActor())
+		{
+			if ( OutHit.GetActor()->GetClass()->ImplementsInterface(SearchClass) )
+			{
+				return OutHit.GetActor();
+			}
+		}
+	}
+
+	return nullptr;
+}
+
+void ASIAIECharacter::Interact()
+{
+	if ( AActor* Interactive = InteractTrace(UInteractive::StaticClass()) )
+	{
+		ServerInteract(Interactive);
+	}
+}
+
+bool ASIAIECharacter::ServerInteract_Validate(AActor* InInteractiveActor)
+{
+	return true;
+}
+
+void ASIAIECharacter::ServerInteract_Implementation(AActor* InInteractiveActor)
+{
+	if ( HasAuthority() || ! InInteractiveActor )
+	{
+		return;
+	}
+	
+	IInteractive::Execute_Interact(InInteractiveActor, this);
+}
+
+
 void ASIAIECharacter::OnFire()
 {
-	// try and fire a projectile
-	if (ProjectileClass != nullptr)
+	
+}
+
+void ASIAIECharacter::OnStopFire()
+{
+	
+}
+
+void ASIAIECharacter::OnRep_Weapon(AWeapon* InWeapon)
+{
+	if (InWeapon)
 	{
-		UWorld* const World = GetWorld();
-		if (World != nullptr)
-		{
-			if (bUsingMotionControllers)
-			{
-				const FRotator SpawnRotation = VR_MuzzleLocation->GetComponentRotation();
-				const FVector SpawnLocation = VR_MuzzleLocation->GetComponentLocation();
-				World->SpawnActor<ASIAIEProjectile>(ProjectileClass, SpawnLocation, SpawnRotation);
-			}
-			else
-			{
-				const FRotator SpawnRotation = GetControlRotation();
-				// MuzzleOffset is in camera space, so transform it to world space before offsetting from the character location to find the final muzzle position
-				const FVector SpawnLocation = ((FP_MuzzleLocation != nullptr) ? FP_MuzzleLocation->GetComponentLocation() : GetActorLocation()) + SpawnRotation.RotateVector(GunOffset);
-
-				//Set Spawn Collision Handling Override
-				FActorSpawnParameters ActorSpawnParams;
-				ActorSpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButDontSpawnIfColliding;
-
-				// spawn the projectile at the muzzle
-				World->SpawnActor<ASIAIEProjectile>(ProjectileClass, SpawnLocation, SpawnRotation, ActorSpawnParams);
-			}
-		}
+		LocalDrawWeapon(InWeapon);
 	}
-
-	// try and play the sound if specified
-	if (FireSound != nullptr)
+	else
 	{
-		UGameplayStatics::PlaySoundAtLocation(this, FireSound, GetActorLocation());
+		LocalSheathWeapon(LastWeapon);
 	}
+}
 
-	// try and play a firing animation if specified
-	if (FireAnimation != nullptr)
+void ASIAIECharacter::OnRep_Weapons(TArray<AWeapon*> InWeapons)
+{
+	LastWeapon = Weapons.Contains(LastWeapon) ? LastWeapon : nullptr;
+	for ( const auto Weapon : InWeapons )
 	{
-		// Get the animation object for the arms mesh
-		UAnimInstance* AnimInstance = Mesh1P->GetAnimInstance();
-		if (AnimInstance != nullptr)
+		if (Weapon != CurrentWeapon)
 		{
-			AnimInstance->Montage_Play(FireAnimation, 1.f);
+			LocalSheathWeapon(Weapon);
 		}
 	}
 }
 
-void ASIAIECharacter::OnResetVR()
+void ASIAIECharacter::SetWeapon_Implementation(AWeapon* NewWeapon)
 {
-	UHeadMountedDisplayFunctionLibrary::ResetOrientationAndPosition();
-}
-
-void ASIAIECharacter::BeginTouch(const ETouchIndex::Type FingerIndex, const FVector Location)
-{
-	if (TouchItem.bIsPressed == true)
+	if ( !HasAuthority() || NewWeapon == CurrentWeapon )
 	{
 		return;
 	}
-	if ((FingerIndex == TouchItem.FingerIndex) && (TouchItem.bMoved == false))
-	{
-		OnFire();
-	}
-	TouchItem.bIsPressed = true;
-	TouchItem.FingerIndex = FingerIndex;
-	TouchItem.Location = Location;
-	TouchItem.bMoved = false;
+
+	CurrentWeapon = NewWeapon;
 }
 
-void ASIAIECharacter::EndTouch(const ETouchIndex::Type FingerIndex, const FVector Location)
+bool ASIAIECharacter::ServerPickUp_Validate(AWeapon* InWeapon)
 {
-	if (TouchItem.bIsPressed == false)
+	return true;
+}
+
+void ASIAIECharacter::ServerPickUp_Implementation(AWeapon* InWeapon)
+{
+	PickUp(InWeapon);
+}
+
+bool ASIAIECharacter::CanPickUp(AWeapon* InWeapon) const
+{
+	return !GetHolsterFor(InWeapon).IsNone();
+}
+
+void ASIAIECharacter::PickUp(AWeapon* InWeapon)
+{
+	if ( !HasAuthority() )
 	{
 		return;
 	}
-	TouchItem.bIsPressed = false;
+
+	if ( !CanPickUp(InWeapon) )
+	{
+		return;
+	}
+	
+	Weapons.Add(InWeapon);
+	// InWeapon-> Что-то типа что подобрано оружие
+
+	if (!CurrentWeapon)
+	{
+		DrawWeapon(InWeapon);
+	}
 }
 
-//Commenting this section out to be consistent with FPS BP template.
-//This allows the user to turn without using the right virtual joystick
+void ASIAIECharacter::ServerDropWeapon_Implementation(AWeapon* InWeapon)
+{
+	DropWeapon(InWeapon);
+}
 
-//void ASIAIECharacter::TouchUpdate(const ETouchIndex::Type FingerIndex, const FVector Location)
-//{
-//	if ((TouchItem.bIsPressed == true) && (TouchItem.FingerIndex == FingerIndex))
-//	{
-//		if (TouchItem.bIsPressed)
-//		{
-//			if (GetWorld() != nullptr)
-//			{
-//				UGameViewportClient* ViewportClient = GetWorld()->GetGameViewport();
-//				if (ViewportClient != nullptr)
-//				{
-//					FVector MoveDelta = Location - TouchItem.Location;
-//					FVector2D ScreenSize;
-//					ViewportClient->GetViewportSize(ScreenSize);
-//					FVector2D ScaledDelta = FVector2D(MoveDelta.X, MoveDelta.Y) / ScreenSize;
-//					if (FMath::Abs(ScaledDelta.X) >= 4.0 / ScreenSize.X)
-//					{
-//						TouchItem.bMoved = true;
-//						float Value = ScaledDelta.X * BaseTurnRate;
-//						AddControllerYawInput(Value);
-//					}
-//					if (FMath::Abs(ScaledDelta.Y) >= 4.0 / ScreenSize.Y)
-//					{
-//						TouchItem.bMoved = true;
-//						float Value = ScaledDelta.Y * BaseTurnRate;
-//						AddControllerPitchInput(Value);
-//					}
-//					TouchItem.Location = Location;
-//				}
-//				TouchItem.Location = Location;
-//			}
-//		}
-//	}
-//}
+void ASIAIECharacter::DropWeapon(AWeapon* InWeapon)
+{
+	if ( !HasAuthority() )
+	{
+		ServerDropWeapon(InWeapon);
+	}
+
+	if ( HasAuthority() )
+	{
+		NextWeapon();
+		Weapons.Remove(InWeapon);
+		if (Weapons.Num() < 1) SetWeapon(nullptr);
+	}
+
+	for (auto Holster : Holsters)
+	{
+		if (Holster.IsAttached(InWeapon))
+		{
+			Holster.Detach();
+			break;
+		}
+	}
+}
+
+void ASIAIECharacter::DropCurrentWeapon()
+{
+	LastWeapon = nullptr;
+	DropWeapon(CurrentWeapon);
+}
+
+void ASIAIECharacter::NextWeapon()
+{
+	if (Weapons.Num() < 1)
+	{
+		return;
+	}
+
+	if ( !CurrentWeapon && LastWeapon )
+	{
+		DrawWeapon(LastWeapon);
+		return;
+	}
+	
+	const int Count = Weapons.Num();
+	const int Index = Weapons.IndexOfByKey(CurrentWeapon) + 1;
+	DrawWeapon(Weapons[Index  % Count]);
+}
+
+void ASIAIECharacter::PreviousWeapon()
+{
+	if (Weapons.Num() < 1)
+	{
+		return;
+	}
+
+	if ( !CurrentWeapon && LastWeapon )
+	{
+		DrawWeapon(LastWeapon);
+		return;
+	}
+	
+	const int Count = Weapons.Num();
+	const int Index = Weapons.IndexOfByKey(CurrentWeapon) + Count - 1;
+	DrawWeapon(Weapons[Index % Count]);
+}
+
+void ASIAIECharacter::DrawWeapon(AWeapon* InWeapon)
+{
+	if (!InWeapon)
+	{
+		return;
+	}
+
+	SetWeapon(InWeapon);
+}
+
+void ASIAIECharacter::SheathWeapon()
+{
+	SetWeapon(nullptr);
+}
+
+void ASIAIECharacter::LocalDrawWeapon(AWeapon* InWeapon)
+{
+	AWeapon* OldWeapon = LastWeapon;
+	
+	if (InWeapon)
+	{
+		LastWeapon = InWeapon;
+	}
+
+	if (OldWeapon)
+	{
+		LocalSheathWeapon(OldWeapon);
+	}
+
+	if ( !IsBotControlled() )
+	{
+		USkeletalMeshComponent* FP = InWeapon->GetMesh1P();
+		FP->AttachToComponent(GetMesh1P(),
+			FAttachmentTransformRules(EAttachmentRule::SnapToTarget, true),
+			TEXT("GripPointFP"));
+	}
+	
+	USkeletalMeshComponent* TP = InWeapon->GetMeshTP();
+	TP->AttachToComponent(GetMesh(),
+		FAttachmentTransformRules(EAttachmentRule::SnapToTarget, true),
+		TEXT("GripPoint"));
+}
+
+void ASIAIECharacter::LocalSheathWeapon(AWeapon* InWeapon, FName SocketName)
+{
+	if (!InWeapon)
+	{
+		return;
+	}
+	
+	if (SocketName.IsNone())
+	{
+		SocketName = GetHolsterFor(InWeapon);
+	}
+	
+	USkeletalMeshComponent* FP = InWeapon->GetMesh1P();
+	USkeletalMeshComponent* TP = InWeapon->GetMeshTP();
+		
+	FP->AttachToComponent(GetMesh1P(),
+		FAttachmentTransformRules(EAttachmentRule::SnapToTarget, true),
+		SocketName);
+	TP->AttachToComponent(GetMesh(),
+		FAttachmentTransformRules(EAttachmentRule::SnapToTarget, true),
+		SocketName);
+}
+
+FName ASIAIECharacter::GetHolsterOf(AWeapon* InWeapon) const
+{
+	for (auto Holster : Holsters)
+	{		
+		if (Holster.IsAttached(InWeapon))
+		{
+			return Holster.GetName();
+		}
+	}
+	return NAME_None;
+}
+
+FName ASIAIECharacter::GetHolsterFor(AWeapon* InWeapon) const
+{
+	const FName Result = GetHolsterOf(InWeapon);
+
+	if (Result.IsNone())
+	{
+		for (auto Holster : Holsters)
+		{		
+			if (!Holster.IsWeaponAttached())
+			{
+				return Holster.GetName();
+			}
+		}
+	}
+
+	return Result;
+}
 
 void ASIAIECharacter::MoveForward(float Value)
 {
@@ -284,17 +457,12 @@ void ASIAIECharacter::LookUpAtRate(float Rate)
 	AddControllerPitchInput(Rate * BaseLookUpRate * GetWorld()->GetDeltaSeconds());
 }
 
-bool ASIAIECharacter::EnableTouchscreenMovement(class UInputComponent* PlayerInputComponent)
+bool ASIAIECharacter::IsAlive() const
 {
-	if (FPlatformMisc::SupportsTouchInput() || GetDefault<UInputSettings>()->bUseMouseForTouch)
-	{
-		PlayerInputComponent->BindTouch(EInputEvent::IE_Pressed, this, &ASIAIECharacter::BeginTouch);
-		PlayerInputComponent->BindTouch(EInputEvent::IE_Released, this, &ASIAIECharacter::EndTouch);
+	return true;
+}
 
-		//Commenting this out to be more consistent with FPS BP template.
-		//PlayerInputComponent->BindTouch(EInputEvent::IE_Repeat, this, &ASIAIECharacter::TouchUpdate);
-		return true;
-	}
-	
-	return false;
+bool ASIAIECharacter::IsFirstPerson() const
+{
+	return IsAlive() && Controller && Controller->IsLocalPlayerController();
 }

@@ -6,6 +6,7 @@
 #include "GameFramework/Character.h"
 #include "SIAIECharacter.generated.h"
 
+class AWeapon;
 class UInputComponent;
 class USkeletalMeshComponent;
 class USceneComponent;
@@ -13,6 +14,27 @@ class UCameraComponent;
 class UMotionControllerComponent;
 class UAnimMontage;
 class USoundBase;
+
+USTRUCT(BlueprintType)
+struct FHolster
+{
+	GENERATED_BODY()
+
+private:
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (AllowPrivateAccess))
+	FName SocketName;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, meta = (AllowPrivateAccess))
+	AWeapon* Weapon = nullptr;
+	
+public:
+	void SetWeapon(AWeapon* InWeapon);
+	void Detach() { SetWeapon(nullptr); }
+	FName GetName() const { return SocketName; }
+	bool IsWeaponAttached() const { return Weapon; }
+	AWeapon* GetAttachedWeapon() const { return Weapon; }
+	bool IsAttached(AWeapon* InWeapon) const { return GetAttachedWeapon() == InWeapon }
+};
 
 UCLASS(config=Game)
 class ASIAIECharacter : public ACharacter
@@ -22,40 +44,20 @@ class ASIAIECharacter : public ACharacter
 	/** Pawn mesh: 1st person view (arms; seen only by self) */
 	UPROPERTY(VisibleDefaultsOnly, Category=Mesh)
 	USkeletalMeshComponent* Mesh1P;
-
-	/** Gun mesh: 1st person view (seen only by self) */
-	UPROPERTY(VisibleDefaultsOnly, Category = Mesh)
-	USkeletalMeshComponent* FP_Gun;
-
-	/** Location on gun mesh where projectiles should spawn. */
-	UPROPERTY(VisibleDefaultsOnly, Category = Mesh)
-	USceneComponent* FP_MuzzleLocation;
-
-	/** Gun mesh: VR view (attached to the VR controller directly, no arm, just the actual gun) */
-	UPROPERTY(VisibleDefaultsOnly, Category = Mesh)
-	USkeletalMeshComponent* VR_Gun;
-
-	/** Location on VR gun mesh where projectiles should spawn. */
-	UPROPERTY(VisibleDefaultsOnly, Category = Mesh)
-	USceneComponent* VR_MuzzleLocation;
-
+	
 	/** First person camera */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Camera, meta = (AllowPrivateAccess = "true"))
 	UCameraComponent* FirstPersonCameraComponent;
 
-	/** Motion controller (right hand) */
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, meta = (AllowPrivateAccess = "true"))
-	UMotionControllerComponent* R_MotionController;
-
-	/** Motion controller (left hand) */
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, meta = (AllowPrivateAccess = "true"))
-	UMotionControllerComponent* L_MotionController;
-
 public:
 	ASIAIECharacter();
-
+	
 protected:
 	virtual void BeginPlay();
+
+	virtual void SetupPlayerInputComponent(UInputComponent* InputComponent) override;
+	virtual float PlayAnimMontage(UAnimMontage* AnimMontage, float InPlayRate, FName StartSectionName) override;
+	virtual void StopAnimMontage(UAnimMontage* AnimMontage) override;
 
 public:
 	/** Base turn rate, in deg/sec. Other scaling may affect final turn rate. */
@@ -66,33 +68,93 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category=Camera)
 	float BaseLookUpRate;
 
-	/** Gun muzzle's offset from the characters location */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Gameplay)
-	FVector GunOffset;
-
-	/** Projectile class to spawn */
-	UPROPERTY(EditDefaultsOnly, Category=Projectile)
-	TSubclassOf<class ASIAIEProjectile> ProjectileClass;
-
-	/** Sound to play each time we fire */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Gameplay)
-	USoundBase* FireSound;
-
-	/** AnimMontage to play each time we fire */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Gameplay)
-	UAnimMontage* FireAnimation;
-
-	/** Whether to use motion controller location for aiming. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Gameplay)
-	uint8 bUsingMotionControllers : 1;
-
-protected:
+	///////////////////////////////////////////
+	/// Interaction
 	
-	/** Fires a projectile. */
-	void OnFire();
+private:
+	UPROPERTY(EditDefaultsOnly)
+	float InteractTraceLength;
 
-	/** Resets HMD orientation and position in VR. */
-	void OnResetVR();
+protected:	
+	UFUNCTION(BlueprintCallable)
+	void Interact();
+	
+public:
+	UFUNCTION(BlueprintCallable)
+    AActor* InteractTrace(TSubclassOf<UInterface> SearchClass);
+
+private:
+	UFUNCTION(Server, Reliable, WithValidation)
+	void ServerInteract(AActor* InInteractiveActor);
+	
+	///////////////////////////////////////////
+	/// Weapon
+private:
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (AllowPrivateAccess))
+	TArray<FHolster> Holsters;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, meta = (AllowPrivateAccess))
+	TArray<AWeapon*> Weapons;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, ReplicatedUsing=OnRep_Weapon, meta = (AllowPrivateAccess))
+	AWeapon* CurrentWeapon;
+
+	/** Used for draw weapon if it was sheathed*/
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, meta = (AllowPrivateAccess))
+	AWeapon* LastWeapon;
+	
+protected:
+	void OnFire();
+	void OnStopFire();
+	
+	UFUNCTION()
+	void OnRep_Weapon(AWeapon* InWeapon);
+	
+	UFUNCTION()
+	void OnRep_Weapons(TArray<AWeapon*> InWeapons);
+	
+public:
+	void PickUp(AWeapon* InWeapon);
+	bool CanPickUp(AWeapon* InWeapon) const;
+	
+	void DropWeapon(AWeapon* InWeapon);
+	void DropCurrentWeapon();
+	
+	void NextWeapon();
+	void PreviousWeapon();
+	
+	void DrawWeapon(AWeapon* InWeapon);
+	void SheathWeapon();
+	
+private:
+	UFUNCTION(Server, Reliable, WithValidation)
+	void ServerPickUp(AWeapon* InWeapon);
+	
+	UFUNCTION(Server, Reliable)
+	void ServerDropWeapon(AWeapon* InWeapon);
+	
+	UFUNCTION(Server, Reliable)
+	void SetWeapon(AWeapon* NewWeapon);
+	
+	void LocalDrawWeapon(AWeapon* InWeapon);
+	void LocalSheathWeapon(AWeapon* InWeapon, FName SocketName = NAME_None);
+
+	FName GetHolsterOf(AWeapon* InWeapon) const;
+	FName GetHolsterFor(AWeapon* InWeapon) const;
+
+	//////////
+	// Health
+private:
+	//UPROPERTY(VisibleDefaultsOnly, BlueprintReadOnly, Category=Mesh, meta = (AllowPrivateAccess = "true"))
+	//UHealthComponent* Health;
+
+public:
+	//UFUNCTION(BlueprintPure, Category = Health)
+	//virtual bool IsAlive() const { return Health->Get() > 0.f; }
+	
+protected:
+	///////////////////////////////////////////
+	/// Movement
 
 	/** Handles moving forward/backward */
 	void MoveForward(float Val);
@@ -112,37 +174,15 @@ protected:
 	 */
 	void LookUpAtRate(float Rate);
 
-	struct TouchData
-	{
-		TouchData() { bIsPressed = false;Location=FVector::ZeroVector;}
-		bool bIsPressed;
-		ETouchIndex::Type FingerIndex;
-		FVector Location;
-		bool bMoved;
-	};
-	void BeginTouch(const ETouchIndex::Type FingerIndex, const FVector Location);
-	void EndTouch(const ETouchIndex::Type FingerIndex, const FVector Location);
-	void TouchUpdate(const ETouchIndex::Type FingerIndex, const FVector Location);
-	TouchData	TouchItem;
-	
-protected:
-	// APawn interface
-	virtual void SetupPlayerInputComponent(UInputComponent* InputComponent) override;
-	// End of APawn interface
-
-	/* 
-	 * Configures input for touchscreen devices if there is a valid touch interface for doing so 
-	 *
-	 * @param	InputComponent	The input component pointer to bind controls to
-	 * @returns true if touch controls were enabled.
-	 */
-	bool EnableTouchscreenMovement(UInputComponent* InputComponent);
-
 public:
 	/** Returns Mesh1P subobject **/
 	USkeletalMeshComponent* GetMesh1P() const { return Mesh1P; }
+	
 	/** Returns FirstPersonCameraComponent subobject **/
 	UCameraComponent* GetFirstPersonCameraComponent() const { return FirstPersonCameraComponent; }
 
+	bool IsAlive() const;
+	bool IsFirstPerson() const;
+	USkeletalMeshComponent* GetPawnMesh() const { return IsFirstPerson() ? GetMesh1P() : GetMesh(); }
 };
 
