@@ -1,4 +1,4 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SIAIECharacter.h"
 #include "SIAIEProjectile.h"
@@ -7,11 +7,9 @@
 #include "Components/CapsuleComponent.h"
 #include "Components/InputComponent.h"
 #include "GameFramework/InputSettings.h"
-#include "HeadMountedDisplayFunctionLibrary.h"
 #include "Kismet/GameplayStatics.h"
 #include "MotionControllerComponent.h"
 #include "Weapon.h"
-#include "XRMotionControllerBase.h" // for FXRMotionControllerBase::RightHandSourceId
 #include "Net/UnrealNetwork.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogFPChar, Warning, All);
@@ -27,31 +25,28 @@ void FHolster::SetWeapon(AWeapon* InWeapon)
 ASIAIECharacter::ASIAIECharacter()
 {
 	SetCanBeDamaged(true);
-	bReplicates = true;
 	
 	// Set size for collision capsule
-	GetCapsuleComponent()->InitCapsuleSize(55.f, 96.0f);
+	GetCapsuleComponent()->InitCapsuleSize(40.f, 96.0f);
 
 	// set our turn rates for input
 	BaseTurnRate = 45.f;
 	BaseLookUpRate = 45.f;
-
+	
 	// Create a CameraComponent	
 	FirstPersonCameraComponent = CreateDefaultSubobject<UCameraComponent>(TEXT("FirstPersonCamera"));
 	FirstPersonCameraComponent->SetupAttachment(GetCapsuleComponent());
 	FirstPersonCameraComponent->SetRelativeLocation(FVector(-39.56f, 1.75f, 64.f)); // Position the camera
 	FirstPersonCameraComponent->bUsePawnControlRotation = true;
-
-	GetMesh()->SetOwnerNoSee(true);
 	
 	// Create a mesh component that will be used when being viewed from a '1st person' view (when controlling this pawn)
-	Mesh1P = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("CharacterMesh1P"));
-	Mesh1P->SetOnlyOwnerSee(true);
-	Mesh1P->SetupAttachment(FirstPersonCameraComponent);
-	Mesh1P->bCastDynamicShadow = false;
-	Mesh1P->CastShadow = false;
-	Mesh1P->SetRelativeRotation(FRotator(1.9f, -19.19f, 5.2f));
-	Mesh1P->SetRelativeLocation(FVector(-0.5f, -4.4f, -155.7f));
+	ShadowMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("CharacterMesh1P"));
+	ShadowMesh->SetOnlyOwnerSee(true);
+	ShadowMesh->bRenderInMainPass = false;
+	ShadowMesh->bRenderInDepthPass = false;
+	ShadowMesh->SetupAttachment(GetMesh());
+	ShadowMesh->SetRelativeRotation(FRotator(1.9f, -19.19f, 5.2f));
+	ShadowMesh->SetRelativeLocation(FVector(-0.5f, -4.4f, -155.7f));
 }
 
 void ASIAIECharacter::BeginPlay()
@@ -76,12 +71,12 @@ void ASIAIECharacter::SetupPlayerInputComponent(class UInputComponent* PlayerInp
 	PlayerInputComponent->BindAction("Fire", IE_Pressed, this, &ASIAIECharacter::OnFire);
 	PlayerInputComponent->BindAction("Fire", IE_Released, this, &ASIAIECharacter::OnStopFire);
 
-	PlayerInputComponent->BindAction("Interact", IE_Pressed, this, &ASIAIECharacter::Interact);
+	PlayerInputComponent->BindAction("Interact", IE_Pressed, this, &ASIAIECharacter::OnInteract);
 
 	PlayerInputComponent->BindAction("NextWeapon", IE_Pressed, this, &ASIAIECharacter::NextWeapon);
 	PlayerInputComponent->BindAction("PreviousWeapon", IE_Released, this, &ASIAIECharacter::PreviousWeapon);
 	
-	PlayerInputComponent->BindAction("SheathWeapon", IE_Released, this, &ASIAIECharacter::SheathWeapon);
+	PlayerInputComponent->BindAction("SheathWeapon", IE_Released, this, &ASIAIECharacter::SheathCurrentWeapon);
 	PlayerInputComponent->BindAction("DropWeapon", IE_Released, this, &ASIAIECharacter::DropCurrentWeapon);
 	
 	// Bind movement events
@@ -97,28 +92,22 @@ void ASIAIECharacter::SetupPlayerInputComponent(class UInputComponent* PlayerInp
 	PlayerInputComponent->BindAxis("LookUpRate", this, &ASIAIECharacter::LookUpAtRate);
 }
 
-void ASIAIECharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+float ASIAIECharacter::PlayAnimMontage(USkeletalMeshComponent* UseMesh, UAnimMontage* AnimMontage, float InPlayRate,
+	FName StartSectionName)
 {
-	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
-
-	DOREPLIFETIME(ASIAIECharacter, CurrentWeapon);
-	DOREPLIFETIME(ASIAIECharacter, Weapons);
-}
-
-float ASIAIECharacter::PlayAnimMontage(UAnimMontage* AnimMontage, float InPlayRate, FName StartSectionName)
-{
-	USkeletalMeshComponent* UseMesh = GetPawnMesh();
+	float Result = 0.f;
+	
 	if (AnimMontage && UseMesh && UseMesh->AnimScriptInstance)
 	{
-		return UseMesh->AnimScriptInstance->Montage_Play(AnimMontage, InPlayRate);
+		Result = UseMesh->AnimScriptInstance->Montage_Play(AnimMontage, InPlayRate);
+		UseMesh->AnimScriptInstance->Montage_JumpToSection(StartSectionName);
 	}
 
-	return 0.0f;
+	return Result;
 }
 
-void ASIAIECharacter::StopAnimMontage(UAnimMontage* AnimMontage)
+void ASIAIECharacter::StopAnimMontage(USkeletalMeshComponent* UseMesh, UAnimMontage* AnimMontage)
 {
-	USkeletalMeshComponent* UseMesh = GetPawnMesh();
 	if (AnimMontage && UseMesh && UseMesh->AnimScriptInstance &&
 		UseMesh->AnimScriptInstance->Montage_IsPlaying(AnimMontage))
 	{
@@ -126,7 +115,37 @@ void ASIAIECharacter::StopAnimMontage(UAnimMontage* AnimMontage)
 	}
 }
 
-AActor* ASIAIECharacter::InteractTrace(TSubclassOf<UInterface> SearchClass)
+float ASIAIECharacter::PlayAnimMontage(FWeaponAnim AnimMontage, float InPlayRate, FName StartSectionName)
+{
+	float Result = 0.f;
+	
+	USkeletalMeshComponent* UseMesh = GetMesh();
+	UAnimMontage* UseMontage = IsFirstPerson() ? AnimMontage.Pawn1P : AnimMontage.Pawn3P;
+
+	Result = PlayAnimMontage(UseMesh, UseMontage, InPlayRate, StartSectionName);
+	
+	if (IsFirstPerson())
+	{
+		PlayAnimMontage(ShadowMesh, AnimMontage.Pawn3P, InPlayRate, StartSectionName);
+	}
+	
+	return Result;
+}
+
+void ASIAIECharacter::StopAnimMontage(FWeaponAnim AnimMontage)
+{
+	USkeletalMeshComponent* UseMesh = GetMesh();
+	UAnimMontage* UseMontage = IsFirstPerson() ? AnimMontage.Pawn1P : AnimMontage.Pawn3P;
+
+	StopAnimMontage(UseMesh, UseMontage);
+	
+	if (IsFirstPerson())
+	{
+		StopAnimMontage(ShadowMesh, AnimMontage.Pawn3P);
+	}
+}
+
+AActor* ASIAIECharacter::TraceForInteractiveActor(TSubclassOf<UInterface> SearchClass)
 {
 	FHitResult OutHit;
 	
@@ -156,22 +175,14 @@ AActor* ASIAIECharacter::InteractTrace(TSubclassOf<UInterface> SearchClass)
 	return nullptr;
 }
 
-void ASIAIECharacter::Interact()
+void ASIAIECharacter::OnInteract()
 {
-	if ( AActor* Interactive = InteractTrace(UInteractive::StaticClass()) )
-	{
-		ServerInteract(Interactive);
-	}
+	Interact(TraceForInteractiveActor(UInteractive::StaticClass()));
 }
 
-bool ASIAIECharacter::ServerInteract_Validate(AActor* InInteractiveActor)
+void ASIAIECharacter::Interact(AActor* InInteractiveActor)
 {
-	return true;
-}
-
-void ASIAIECharacter::ServerInteract_Implementation(AActor* InInteractiveActor)
-{
-	if ( HasAuthority() || ! InInteractiveActor )
+	if ( !InInteractiveActor || !IInteractive::Execute_CanBeInteractedBy(InInteractiveActor, this) )
 	{
 		return;
 	}
@@ -179,59 +190,52 @@ void ASIAIECharacter::ServerInteract_Implementation(AActor* InInteractiveActor)
 	IInteractive::Execute_Interact(InInteractiveActor, this);
 }
 
-
 void ASIAIECharacter::OnFire()
 {
-	
+	if (CurrentWeapon)
+	{
+		CurrentWeapon->StartFire();
+	}
 }
 
 void ASIAIECharacter::OnStopFire()
 {
-	
+	if (CurrentWeapon)
+	{
+		CurrentWeapon->StopFire();
+	}
 }
 
-void ASIAIECharacter::OnRep_Weapon(AWeapon* InWeapon)
+void ASIAIECharacter::HideWeapon()
 {
-	if (InWeapon)
+	if (CurrentWeapon)
 	{
-		LocalDrawWeapon(InWeapon);
+		SheathCurrentWeapon();
 	}
 	else
 	{
-		LocalSheathWeapon(LastWeapon);
+		DrawWeapon();
 	}
 }
 
-void ASIAIECharacter::OnRep_Weapons(TArray<AWeapon*> InWeapons)
+void ASIAIECharacter::SetWeapon(AWeapon* NewWeapon)
 {
-	LastWeapon = Weapons.Contains(LastWeapon) ? LastWeapon : nullptr;
-	for ( const auto Weapon : InWeapons )
-	{
-		if (Weapon != CurrentWeapon)
-		{
-			LocalSheathWeapon(Weapon);
-		}
-	}
-}
-
-void ASIAIECharacter::SetWeapon_Implementation(AWeapon* NewWeapon)
-{
-	if ( !HasAuthority() || NewWeapon == CurrentWeapon )
+	if ( NewWeapon == CurrentWeapon )
 	{
 		return;
 	}
 
+	if (Weapons.Contains(CurrentWeapon))
+	{
+		SheathWeapon(CurrentWeapon);
+		CurrentWeapon->OnUnEquip();
+		LastWeapon = CurrentWeapon;
+	}
+	
 	CurrentWeapon = NewWeapon;
-}
 
-bool ASIAIECharacter::ServerPickUp_Validate(AWeapon* InWeapon)
-{
-	return true;
-}
-
-void ASIAIECharacter::ServerPickUp_Implementation(AWeapon* InWeapon)
-{
-	PickUp(InWeapon);
+	DrawWeapon(CurrentWeapon);
+	CurrentWeapon->OnEquip();
 }
 
 bool ASIAIECharacter::CanPickUp(AWeapon* InWeapon) const
@@ -241,45 +245,36 @@ bool ASIAIECharacter::CanPickUp(AWeapon* InWeapon) const
 
 void ASIAIECharacter::PickUp(AWeapon* InWeapon)
 {
-	if ( !HasAuthority() )
-	{
-		return;
-	}
-
 	if ( !CanPickUp(InWeapon) )
 	{
 		return;
 	}
-	
-	Weapons.Add(InWeapon);
-	// InWeapon-> Что-то типа что подобрано оружие
 
+	InWeapon->OnEnterInventory(this);
+	Weapons.Add(InWeapon);
+	
 	if (!CurrentWeapon)
 	{
-		DrawWeapon(InWeapon);
+		SetWeapon(InWeapon);
 	}
-}
-
-void ASIAIECharacter::ServerDropWeapon_Implementation(AWeapon* InWeapon)
-{
-	DropWeapon(InWeapon);
+	else
+	{
+		SheathWeapon(InWeapon);
+	}
 }
 
 void ASIAIECharacter::DropWeapon(AWeapon* InWeapon)
 {
-	if ( !HasAuthority() )
+	if (!InWeapon)
 	{
-		ServerDropWeapon(InWeapon);
+		return;
 	}
-
-	if ( HasAuthority() )
-	{
-		NextWeapon();
-		Weapons.Remove(InWeapon);
-		if (Weapons.Num() < 1) SetWeapon(nullptr);
-	}
-
-	for (auto Holster : Holsters)
+	
+	Weapons.Remove(InWeapon);
+	InWeapon->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+	InWeapon->OnLeaveInventory();
+	
+	for ( auto Holster : Holsters )
 	{
 		if (Holster.IsAttached(InWeapon))
 		{
@@ -291,44 +286,32 @@ void ASIAIECharacter::DropWeapon(AWeapon* InWeapon)
 
 void ASIAIECharacter::DropCurrentWeapon()
 {
-	LastWeapon = nullptr;
+	AWeapon* NewWeapon = GetWeapon(Next);
+	NewWeapon = NewWeapon != CurrentWeapon ? NewWeapon : nullptr; 
 	DropWeapon(CurrentWeapon);
+	SetWeapon(NewWeapon);
+}
+
+AWeapon* ASIAIECharacter::GetWeapon(const EWeaponSwitch InDirection)
+{
+	if ( Weapons.Num() < 1 )
+	{
+		return CurrentWeapon;
+	}
+	
+	const int Count = Weapons.Num();
+	const int Index = Weapons.IndexOfByKey(CurrentWeapon) + Count + InDirection;
+	return Weapons[Index % Count];
 }
 
 void ASIAIECharacter::NextWeapon()
 {
-	if (Weapons.Num() < 1)
-	{
-		return;
-	}
-
-	if ( !CurrentWeapon && LastWeapon )
-	{
-		DrawWeapon(LastWeapon);
-		return;
-	}
-	
-	const int Count = Weapons.Num();
-	const int Index = Weapons.IndexOfByKey(CurrentWeapon) + 1;
-	DrawWeapon(Weapons[Index  % Count]);
+	SetWeapon(GetWeapon(Next));
 }
 
 void ASIAIECharacter::PreviousWeapon()
 {
-	if (Weapons.Num() < 1)
-	{
-		return;
-	}
-
-	if ( !CurrentWeapon && LastWeapon )
-	{
-		DrawWeapon(LastWeapon);
-		return;
-	}
-	
-	const int Count = Weapons.Num();
-	const int Index = Weapons.IndexOfByKey(CurrentWeapon) + Count - 1;
-	DrawWeapon(Weapons[Index % Count]);
+	SetWeapon(GetWeapon(Previous));
 }
 
 void ASIAIECharacter::DrawWeapon(AWeapon* InWeapon)
@@ -337,44 +320,54 @@ void ASIAIECharacter::DrawWeapon(AWeapon* InWeapon)
 	{
 		return;
 	}
-
-	SetWeapon(InWeapon);
-}
-
-void ASIAIECharacter::SheathWeapon()
-{
-	SetWeapon(nullptr);
-}
-
-void ASIAIECharacter::LocalDrawWeapon(AWeapon* InWeapon)
-{
-	AWeapon* OldWeapon = LastWeapon;
 	
-	if (InWeapon)
-	{
-		LastWeapon = InWeapon;
-	}
-
-	if (OldWeapon)
-	{
-		LocalSheathWeapon(OldWeapon);
-	}
-
-	if ( !IsBotControlled() )
-	{
-		USkeletalMeshComponent* FP = InWeapon->GetMesh1P();
-		FP->AttachToComponent(GetMesh1P(),
-			FAttachmentTransformRules(EAttachmentRule::SnapToTarget, true),
-			TEXT("GripPointFP"));
-	}
+	USkeletalMeshComponent* FP = InWeapon->GetWeaponMesh();
+	USkeletalMeshComponent* Shadow = InWeapon->GetShadowMesh();
 	
-	USkeletalMeshComponent* TP = InWeapon->GetMeshTP();
-	TP->AttachToComponent(GetMesh(),
+	FP->AttachToComponent(GetMesh(),
 		FAttachmentTransformRules(EAttachmentRule::SnapToTarget, true),
 		TEXT("GripPoint"));
+
+	if (IsPlayerControlled())
+	{
+		Shadow->AttachToComponent(GetShadowMesh(),
+			FAttachmentTransformRules(EAttachmentRule::SnapToTarget, true),
+			TEXT("GripPoint"));
+	}
 }
 
-void ASIAIECharacter::LocalSheathWeapon(AWeapon* InWeapon, FName SocketName)
+void ASIAIECharacter::DrawWeapon()
+{
+	if ( CurrentWeapon )
+	{
+		return;
+	}
+	
+	if ( LastWeapon )
+	{
+		DrawWeapon(LastWeapon);
+		return;
+	}
+
+	NextWeapon();
+}
+
+void ASIAIECharacter::SheathCurrentWeapon()
+{
+	SheathWeapon(CurrentWeapon);
+}
+
+bool ASIAIECharacter::CanFire() const
+{
+	return IsAlive();
+}
+
+bool ASIAIECharacter::CanReload() const
+{
+	return IsAlive();
+}
+
+void ASIAIECharacter::SheathWeapon(AWeapon* InWeapon, FName SocketName)
 {
 	if (!InWeapon)
 	{
@@ -387,17 +380,17 @@ void ASIAIECharacter::LocalSheathWeapon(AWeapon* InWeapon, FName SocketName)
 	}
 	
 	USkeletalMeshComponent* FP = InWeapon->GetMesh1P();
-	USkeletalMeshComponent* TP = InWeapon->GetMeshTP();
+	USkeletalMeshComponent* TP = InWeapon->GetShadowMesh();
 		
-	FP->AttachToComponent(GetMesh1P(),
+	FP->AttachToComponent(GetMesh(),
 		FAttachmentTransformRules(EAttachmentRule::SnapToTarget, true),
 		SocketName);
-	TP->AttachToComponent(GetMesh(),
+	TP->AttachToComponent(GetShadowMesh(),
 		FAttachmentTransformRules(EAttachmentRule::SnapToTarget, true),
 		SocketName);
 }
 
-FName ASIAIECharacter::GetHolsterOf(AWeapon* InWeapon) const
+FName ASIAIECharacter::GetHolsterFor(AWeapon* InWeapon) const
 {
 	for (auto Holster : Holsters)
 	{		
@@ -406,25 +399,16 @@ FName ASIAIECharacter::GetHolsterOf(AWeapon* InWeapon) const
 			return Holster.GetName();
 		}
 	}
-	return NAME_None;
-}
-
-FName ASIAIECharacter::GetHolsterFor(AWeapon* InWeapon) const
-{
-	const FName Result = GetHolsterOf(InWeapon);
-
-	if (Result.IsNone())
-	{
-		for (auto Holster : Holsters)
-		{		
-			if (!Holster.IsWeaponAttached())
-			{
-				return Holster.GetName();
-			}
+	
+	for (auto Holster : Holsters)
+	{		
+		if (!Holster.IsWeaponAttached())
+		{
+			return Holster.GetName();
 		}
 	}
 
-	return Result;
+	return NAME_None;
 }
 
 void ASIAIECharacter::MoveForward(float Value)
@@ -464,5 +448,5 @@ bool ASIAIECharacter::IsAlive() const
 
 bool ASIAIECharacter::IsFirstPerson() const
 {
-	return IsAlive() && Controller && Controller->IsLocalPlayerController();
+	return IsAlive() && Controller && Controller->IsPlayerController();
 }

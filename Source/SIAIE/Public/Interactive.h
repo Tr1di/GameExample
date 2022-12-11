@@ -27,5 +27,5 @@ public:
 	void Interact(ASIAIECharacter* InInstigator);
 
 	UFUNCTION(BlueprintCallable, BlueprintNativeEvent)
-	bool CanBeInteractedBy(ASIAIECharacter* InInstigator) const;
+	bool CanBeInteractedBy(const ASIAIECharacter* InInstigator) const;
 };

@@ -6,6 +6,7 @@
 #include "GameFramework/Character.h"
 #include "SIAIECharacter.generated.h"
 
+struct FWeaponAnim;
 class AWeapon;
 class UInputComponent;
 class USkeletalMeshComponent;
@@ -31,9 +32,9 @@ public:
 	void SetWeapon(AWeapon* InWeapon);
 	void Detach() { SetWeapon(nullptr); }
 	FName GetName() const { return SocketName; }
-	bool IsWeaponAttached() const { return Weapon; }
+	bool IsWeaponAttached() const { return (bool)Weapon; }
 	AWeapon* GetAttachedWeapon() const { return Weapon; }
-	bool IsAttached(AWeapon* InWeapon) const { return GetAttachedWeapon() == InWeapon }
+	bool IsAttached(AWeapon* InWeapon) const { return GetAttachedWeapon() == InWeapon; }
 };
 
 UCLASS(config=Game)
@@ -43,7 +44,7 @@ class ASIAIECharacter : public ACharacter
 
 	/** Pawn mesh: 1st person view (arms; seen only by self) */
 	UPROPERTY(VisibleDefaultsOnly, Category=Mesh)
-	USkeletalMeshComponent* Mesh1P;
+	USkeletalMeshComponent* ShadowMesh;
 	
 	/** First person camera */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Camera, meta = (AllowPrivateAccess = "true"))
@@ -51,15 +52,8 @@ class ASIAIECharacter : public ACharacter
 
 public:
 	ASIAIECharacter();
-	
+
 protected:
-	virtual void BeginPlay();
-
-	virtual void SetupPlayerInputComponent(UInputComponent* InputComponent) override;
-	virtual float PlayAnimMontage(UAnimMontage* AnimMontage, float InPlayRate, FName StartSectionName) override;
-	virtual void StopAnimMontage(UAnimMontage* AnimMontage) override;
-
-public:
 	/** Base turn rate, in deg/sec. Other scaling may affect final turn rate. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category=Camera)
 	float BaseTurnRate;
@@ -67,6 +61,17 @@ public:
 	/** Base look up/down rate, in deg/sec. Other scaling may affect final rate. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category=Camera)
 	float BaseLookUpRate;
+	
+	virtual void BeginPlay();
+
+	virtual void SetupPlayerInputComponent(UInputComponent* InputComponent) override;
+
+	virtual float PlayAnimMontage(USkeletalMeshComponent* UseMesh, UAnimMontage* AnimMontage, float InPlayRate = 1.f, FName StartSectionName=NAME_None);
+	virtual void StopAnimMontage(USkeletalMeshComponent* UseMesh, UAnimMontage* AnimMontage);
+	
+public:
+	float PlayAnimMontage(FWeaponAnim AnimMontage, float InPlayRate = 1.f, FName StartSectionName=NAME_None);
+	void StopAnimMontage(FWeaponAnim AnimMontage);
 
 	///////////////////////////////////////////
 	/// Interaction
@@ -74,44 +79,45 @@ public:
 private:
 	UPROPERTY(EditDefaultsOnly)
 	float InteractTraceLength;
-
+	
+	void Interact(AActor* InInteractiveActor);
+	
 protected:	
 	UFUNCTION(BlueprintCallable)
-	void Interact();
+	void OnInteract();
 	
 public:
 	UFUNCTION(BlueprintCallable)
-    AActor* InteractTrace(TSubclassOf<UInterface> SearchClass);
-
-private:
-	UFUNCTION(Server, Reliable, WithValidation)
-	void ServerInteract(AActor* InInteractiveActor);
+    AActor* TraceForInteractiveActor(TSubclassOf<UInterface> SearchClass);
 	
 	///////////////////////////////////////////
 	/// Weapon
 private:
+	enum EWeaponSwitch : int8
+	{
+		Next = 1,
+		Previous = -1
+	};
+	
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (AllowPrivateAccess))
 	TArray<FHolster> Holsters;
 
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, meta = (AllowPrivateAccess))
 	TArray<AWeapon*> Weapons;
 
-	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, ReplicatedUsing=OnRep_Weapon, meta = (AllowPrivateAccess))
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, meta = (AllowPrivateAccess))
 	AWeapon* CurrentWeapon;
 
 	/** Used for draw weapon if it was sheathed*/
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, meta = (AllowPrivateAccess))
 	AWeapon* LastWeapon;
-	
+
+	AWeapon* GetWeapon(const EWeaponSwitch InDirection);
 protected:
 	void OnFire();
 	void OnStopFire();
-	
-	UFUNCTION()
-	void OnRep_Weapon(AWeapon* InWeapon);
-	
-	UFUNCTION()
-	void OnRep_Weapons(TArray<AWeapon*> InWeapons);
+
+	void HideWeapon();
 	
 public:
 	void PickUp(AWeapon* InWeapon);
@@ -124,33 +130,19 @@ public:
 	void PreviousWeapon();
 	
 	void DrawWeapon(AWeapon* InWeapon);
-	void SheathWeapon();
+	void DrawWeapon();
+	
+	void SheathWeapon(AWeapon* InWeapon, FName SocketName = NAME_None);
+	void SheathCurrentWeapon();
+
+	virtual bool CanFire() const;
+	virtual bool CanReload() const;
+
+	AWeapon* GetWeapon() const { return CurrentWeapon; }
 	
 private:
-	UFUNCTION(Server, Reliable, WithValidation)
-	void ServerPickUp(AWeapon* InWeapon);
-	
-	UFUNCTION(Server, Reliable)
-	void ServerDropWeapon(AWeapon* InWeapon);
-	
-	UFUNCTION(Server, Reliable)
 	void SetWeapon(AWeapon* NewWeapon);
-	
-	void LocalDrawWeapon(AWeapon* InWeapon);
-	void LocalSheathWeapon(AWeapon* InWeapon, FName SocketName = NAME_None);
-
-	FName GetHolsterOf(AWeapon* InWeapon) const;
 	FName GetHolsterFor(AWeapon* InWeapon) const;
-
-	//////////
-	// Health
-private:
-	//UPROPERTY(VisibleDefaultsOnly, BlueprintReadOnly, Category=Mesh, meta = (AllowPrivateAccess = "true"))
-	//UHealthComponent* Health;
-
-public:
-	//UFUNCTION(BlueprintPure, Category = Health)
-	//virtual bool IsAlive() const { return Health->Get() > 0.f; }
 	
 protected:
 	///////////////////////////////////////////
@@ -174,15 +166,14 @@ protected:
 	 */
 	void LookUpAtRate(float Rate);
 
-public:
+public:	
 	/** Returns Mesh1P subobject **/
-	USkeletalMeshComponent* GetMesh1P() const { return Mesh1P; }
+	USkeletalMeshComponent* GetShadowMesh() const { return ShadowMesh; }
 	
 	/** Returns FirstPersonCameraComponent subobject **/
 	UCameraComponent* GetFirstPersonCameraComponent() const { return FirstPersonCameraComponent; }
 
 	bool IsAlive() const;
 	bool IsFirstPerson() const;
-	USkeletalMeshComponent* GetPawnMesh() const { return IsFirstPerson() ? GetMesh1P() : GetMesh(); }
 };
 

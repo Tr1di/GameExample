@@ -5,6 +5,8 @@
 #include "Engine/Texture2D.h"
 #include "TextureResource.h"
 #include "CanvasItem.h"
+#include "Interactive.h"
+#include "SIAIECharacter.h"
 #include "UObject/ConstructorHelpers.h"
 
 ASIAIEHUD::ASIAIEHUD()
@@ -32,4 +34,21 @@ void ASIAIEHUD::DrawHUD()
 	FCanvasTileItem TileItem( CrosshairDrawPosition, CrosshairTex->Resource, FLinearColor::White);
 	TileItem.BlendMode = SE_BLEND_Translucent;
 	Canvas->DrawItem( TileItem );
+
+	if (ASIAIECharacter* Pawn = Cast<ASIAIECharacter>(GetOwningPawn()))
+	{
+		if (const AActor* Weapon = Pawn->TraceForInteractiveActor(UInteractive::StaticClass()))
+		{
+			const FString ActorName = Weapon->GetName();
+	
+			float XSize;
+			float YSize;
+			GetTextSize(ActorName, XSize, YSize);
+
+			FVector ActorLocation = Project(Weapon->GetActorLocation());
+			ActorLocation.Y -= YSize;
+	
+			DrawText(ActorName, FLinearColor::White, ActorLocation.X, ActorLocation.Y);
+		}
+	}
 }
