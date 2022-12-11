@@ -47,6 +47,7 @@ ASIAIECharacter::ASIAIECharacter()
 	ShadowMesh->SetupAttachment(GetMesh());
 	ShadowMesh->SetRelativeRotation(FRotator(1.9f, -19.19f, 5.2f));
 	ShadowMesh->SetRelativeLocation(FVector(-0.5f, -4.4f, -155.7f));
+	ShadowMesh->SetupAttachment(FirstPersonCameraComponent);
 }
 
 void ASIAIECharacter::BeginPlay()
@@ -114,7 +115,7 @@ void ASIAIECharacter::StopAnimMontage(USkeletalMeshComponent* UseMesh, UAnimMont
 		UseMesh->AnimScriptInstance->Montage_Stop(AnimMontage->BlendOut.GetBlendTime(), AnimMontage);
 	}
 }
-
+// @todo Я хз
 float ASIAIECharacter::PlayAnimMontage(FWeaponAnim AnimMontage, float InPlayRate, FName StartSectionName)
 {
 	float Result = 0.f;
@@ -324,7 +325,7 @@ void ASIAIECharacter::DrawWeapon(AWeapon* InWeapon)
 	USkeletalMeshComponent* FP = InWeapon->GetWeaponMesh();
 	USkeletalMeshComponent* Shadow = InWeapon->GetShadowMesh();
 	
-	FP->AttachToComponent(GetMesh(),
+	FP->AttachToComponent(GetShadowMesh(),
 		FAttachmentTransformRules(EAttachmentRule::SnapToTarget, true),
 		TEXT("GripPoint"));
 
@@ -365,6 +366,11 @@ bool ASIAIECharacter::CanFire() const
 bool ASIAIECharacter::CanReload() const
 {
 	return IsAlive();
+}
+
+bool ASIAIECharacter::IsTargeting() const
+{
+	return false;
 }
 
 void ASIAIECharacter::SheathWeapon(AWeapon* InWeapon, FName SocketName)

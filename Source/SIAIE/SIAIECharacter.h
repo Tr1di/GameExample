@@ -135,9 +135,11 @@ public:
 	void SheathWeapon(AWeapon* InWeapon, FName SocketName = NAME_None);
 	void SheathCurrentWeapon();
 
-	virtual bool CanFire() const;
-	virtual bool CanReload() const;
+	bool CanFire() const;
+	bool CanReload() const;
 
+	bool IsTargeting() const;
+	
 	AWeapon* GetWeapon() const { return CurrentWeapon; }
 	
 private:

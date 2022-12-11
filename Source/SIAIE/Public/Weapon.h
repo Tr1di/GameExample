@@ -28,7 +28,7 @@ namespace EWeaponState
 USTRUCT()
 struct FWeaponData
 {
-	GENERATED_USTRUCT_BODY()
+	GENERATED_BODY()
 
 	/** infinite ammo for reloads */
 	UPROPERTY(EditDefaultsOnly, Category=Ammo)
@@ -66,7 +66,7 @@ struct FWeaponData
 		, AmmoPerClip(20)
 		, InitialClips(4)
 		, FireRate(0.2f)
-		, NoAnimReloadDuration(1.0f)
+		, NoAnimReloadDuration(1.f)
 	{}
 };
 
@@ -89,7 +89,7 @@ struct FWeaponAnim
 	{}
 };
 
-UCLASS()
+UCLASS(Abstract)
 class SIAIE_API AWeapon : public ASkeletalMeshActor, public IInteractive
 {
 	GENERATED_BODY()

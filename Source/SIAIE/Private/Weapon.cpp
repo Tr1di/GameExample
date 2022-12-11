@@ -335,7 +335,7 @@ void AWeapon::SimulateWeaponFire()
 	{
 		if (!FireAC)
 		{
-			FireAC = PlayWeaponSound(FireSound);
+			FireAC = PlayWeaponSound(FireLoopSound);
 		}
 	}
 	else
